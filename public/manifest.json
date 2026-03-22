@@ -1,0 +1,13 @@
+{
+  "name": "Signal Driver App",
+  "short_name": "Signal Driver",
+  "description": "Signal Transportation Ltd — Driver Trip App",
+  "start_url": "/driver",
+  "display": "standalone",
+  "background_color": "#0a1628",
+  "theme_color": "#003865",
+  "orientation": "portrait",
+  "icons": [
+    { "src": "/favicon.ico", "sizes": "64x64", "type": "image/x-icon" }
+  ]
+}
