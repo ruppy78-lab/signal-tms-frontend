@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import api from '../../utils/api';
 import toast from 'react-hot-toast';
 import { ContextMenu, useContextMenu, Pagination, Spinner, Confirm, Field, Modal, DocUploadModal, DocList } from '../../components/common';
-import { Plus, Search, RefreshCw, Printer, Mail, DollarSign, X, Edit, Copy, Eye, Upload, Trash2, ChevronDown, ChevronRight, FileText, Download } from 'lucide-react';
+import { Plus, Search, RefreshCw, Printer, Mail, DollarSign, X, Edit, Copy, Eye, Upload, Trash2, ChevronDown, ChevronRight, FileText } from 'lucide-react';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const CARRIER = 'Signal Transportation Ltd';
@@ -24,8 +24,9 @@ const GST_OPTS = [0, 5, 12, 13, 15];
 
 // ─── Print Invoice (with embedded image previews) ────────────────────────────
 async function fetchDocAsBase64(docId, token) {
+  const API = process.env.REACT_APP_API_URL || 'http://localhost:4000/api';
   try {
-    const res = await fetch(`${process.env.REACT_APP_API_URL}/documents/${docId}/download`, {
+    const res = await fetch(`${API}/documents/${docId}/download`, {
       headers: { Authorization: `Bearer ${token}` }
     });
     if (!res.ok) return null;
@@ -40,22 +41,13 @@ async function fetchDocAsBase64(docId, token) {
 }
 
 async function printInvoice(inv, loadDocs=[], invoiceDocs=[]) {
-  const token = localStorage.getItem('token');
+  const API_BASE = (process.env.REACT_APP_API_URL || 'http://localhost:4000/api').replace('/api','');
+
+  // Only POD docs from the load + all invoice docs
   const allDocs = [
-    ...(loadDocs||[]).map(d=>({...d,_source:'load'})),
+    ...(loadDocs||[]).filter(d=>d.doc_type==='pod').map(d=>({...d,_source:'load'})),
     ...(invoiceDocs||[]).map(d=>({...d,_source:'invoice'})),
   ];
-
-  // Fetch images as base64
-  const docPreviews = await Promise.all(allDocs.map(async doc => {
-    const mime = doc.mime_type || '';
-    const isImage = mime.startsWith('image/') || /\.(png|jpg|jpeg|gif|webp)$/i.test(doc.original_name||doc.file_name||'');
-    if (isImage) {
-      const result = await fetchDocAsBase64(doc.id, token);
-      return { ...doc, preview: result };
-    }
-    return { ...doc, preview: null };
-  }));
 
   const lines  = inv.line_items || [];
   const sub    = parseFloat(inv.subtotal)||0;
@@ -64,20 +56,23 @@ async function printInvoice(inv, loadDocs=[], invoiceDocs=[]) {
   const paid   = parseFloat(inv.amount_paid)||0;
   const bal    = total - paid;
 
-  const docsHTML = docPreviews.length > 0 ? `
+  const docsHTML = allDocs.length > 0 ? `
     <div class="docs-section">
       <div class="docs-title">ATTACHED DOCUMENTS</div>
       <div class="docs-grid">
-        ${docPreviews.map(doc => {
-          const isImage = doc.preview?.data;
-          const isPDF   = (doc.mime_type||'').includes('pdf') || /\.pdf$/i.test(doc.original_name||doc.file_name||'');
-          const label   = doc.doc_type?.replace(/_/g,' ').toUpperCase() || 'DOCUMENT';
+        ${allDocs.map(doc => {
+          const mime    = doc.mime_type || '';
           const name    = doc.original_name || doc.file_name || 'Document';
+          const label   = doc.doc_type?.replace(/_/g,' ').toUpperCase() || 'DOCUMENT';
           const date    = doc.created_at ? new Date(doc.created_at).toLocaleDateString() : '';
           const source  = doc._source === 'load' ? 'Load Document' : 'Invoice Document';
+          const isImage = mime.startsWith('image/') || /\.(png|jpg|jpeg|gif|webp)$/i.test(name);
+          const isPDF   = mime.includes('pdf') || /\.pdf$/i.test(name);
+          // Use the static uploads URL directly — no auth needed, no route conflicts
+          const fileUrl = `${API_BASE}/${doc.file_path}`;
           if (isImage) {
             return `<div class="doc-card">
-              <img src="${doc.preview.data}" class="doc-img" alt="${name}"/>
+              <img src="${fileUrl}" class="doc-img" alt="${name}" crossorigin="anonymous"/>
               <div class="doc-label">${label}</div>
               <div class="doc-name">${name}</div>
               <div class="doc-meta">${source} · ${date}</div>
@@ -93,36 +88,53 @@ async function printInvoice(inv, loadDocs=[], invoiceDocs=[]) {
       </div>
     </div>` : '';
 
+  // Separate charge lines from commodity lines.
+  // Commodity rows may have line_type = null (legacy), so also detect by:
+  // zero unit_price AND zero total_price AND description mentions 'lb' or 'pcs'.
+  const isCommodityLine = l =>
+    l.line_type === 'commodity' ||
+    (
+      parseFloat(l.unit_price  || 0) === 0 &&
+      parseFloat(l.total_price || 0) === 0 &&
+      /lb|pcs/i.test(l.description || '')
+    );
+  const commLines   = lines.filter(l =>  isCommodityLine(l));
+  const chargeLines = lines.filter(l => !isCommodityLine(l));
+  const freightLines = chargeLines.filter(l=>l.description?.toLowerCase().includes('freight'));
+  const accLines = chargeLines.filter(l=>!l.description?.toLowerCase().includes('freight') && !l.description?.toLowerCase().includes('fuel'));
+  const fuelLines = chargeLines.filter(l=>l.description?.toLowerCase().includes('fuel'));
+  const freight = freightLines.reduce((s,l)=>s+(parseFloat(l.total_price||l.amount||0)),0) || sub;
+  const accTotal = accLines.reduce((s,l)=>s+(parseFloat(l.total_price||l.amount||0)),0);
+  const fuelTotal = fuelLines.reduce((s,l)=>s+(parseFloat(l.total_price||l.amount||0)),0);
+
   const w = window.open('', '_blank', 'width=900,height=750');
   w.document.write(`<!DOCTYPE html><html><head><title>Invoice ${inv.invoice_number}</title>
   <style>
     @page { size: letter; margin: 0.5in; }
     * { box-sizing: border-box; margin:0; padding:0; }
-    body { font-family: Arial, sans-serif; font-size: 11px; color: #000; max-width: 720px; margin: 0 auto; padding: 12px; }
-    .header { display:grid; grid-template-columns:1fr 1fr; gap:20px; margin-bottom:20px; }
-    .company-name { font-size:20px; font-weight:bold; color:#003865; }
-    .inv-title { font-size:24px; font-weight:bold; color:#003865; text-align:right; }
+    body { font-family: Arial, sans-serif; font-size: 11px; color: #000; max-width: 750px; margin: 0 auto; padding: 16px; }
+    .header { display:grid; grid-template-columns:1fr 1fr; gap:20px; margin-bottom:14px; border-bottom:2px solid #003865; padding-bottom:10px; }
+    .company-name { font-size:18px; font-weight:bold; color:#003865; }
+    .inv-title { font-size:22px; font-weight:bold; color:#003865; text-align:right; }
     .inv-meta { text-align:right; font-size:11px; margin-top:4px; line-height:1.8; }
     .inv-meta b { display:inline-block; min-width:80px; text-align:right; margin-right:6px; color:#555; }
-    .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:14px; }
-    .bill-to { border:1px solid #ddd; padding:10px; background:#fafafa; }
-    .bill-label { font-size:9px; font-weight:bold; text-transform:uppercase; color:#888; display:block; margin-bottom:4px; }
-    .shipment { border:1px solid #dde3ea; padding:10px; background:#f0f4f8; }
-    .ship-title { font-weight:bold; color:#003865; margin-bottom:4px; font-size:11px; }
-    table { width:100%; border-collapse:collapse; margin-bottom:14px; }
-    th { background:#003865; color:#fff; padding:6px 8px; text-align:left; font-size:10px; }
+    .top-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:10px; }
+    .bill-box { border:1px solid #ddd; padding:8px 10px; }
+    .bill-label { font-size:9px; font-weight:bold; text-transform:uppercase; color:#888; display:block; margin-bottom:3px; }
+    .section-title { font-size:10px; font-weight:bold; color:#555; text-transform:uppercase; letter-spacing:0.05em; border-bottom:1px solid #ccc; padding-bottom:3px; margin-bottom:6px; margin-top:10px; }
+    table { width:100%; border-collapse:collapse; margin-bottom:10px; font-size:11px; }
+    th { background:#003865; color:#fff; padding:5px 8px; text-align:left; font-size:10px; }
     th.r { text-align:right; }
-    td { border-bottom:1px solid #eee; padding:6px 8px; }
+    td { border-bottom:1px solid #eee; padding:5px 8px; }
     td.r { text-align:right; }
-    .totals { display:flex; flex-direction:column; align-items:flex-end; gap:4px; margin-bottom:16px; }
-    .tot-row { display:flex; gap:24px; font-size:12px; }
-    .tot-lbl { min-width:130px; text-align:right; color:#555; }
-    .grand { font-size:16px; font-weight:bold; color:#003865; border-top:2px solid #003865; padding-top:6px; margin-top:3px; }
-    .balance { font-size:15px; font-weight:bold; color:${bal>0?'#B71C1C':'#2E7D32'}; }
-    .remit { border:1px solid #003865; padding:10px 14px; margin-top:16px; font-size:10px; background:#f0f4fc; }
+    .stop-type { font-weight:bold; font-size:10px; }
+    .summary-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:12px; border-top:1px solid #ccc; padding-top:10px; }
+    .sum-row { display:flex; justify-content:space-between; padding:2px 0; font-size:11px; }
+    .sum-row.total { font-weight:bold; font-size:13px; color:#003865; border-top:1px solid #003865; padding-top:4px; margin-top:2px; }
+    .sum-row.balance { font-weight:bold; font-size:13px; color:${bal>0?'#B71C1C':'#2E7D32'}; }
+    .remit { border:1px solid #003865; padding:8px 12px; margin-top:12px; font-size:10px; background:#f0f4fc; }
     .sig-row { display:grid; grid-template-columns:1fr 1fr; gap:24px; margin-top:22px; }
-    .sig-line { border-top:1px solid #000; padding-top:4px; font-size:10px; color:#666; margin-top:32px; }
-    /* Documents section */
+    .sig-line { border-top:1px solid #000; padding-top:4px; font-size:10px; color:#666; margin-top:28px; }
     .docs-section { margin-top:20px; border-top:2px solid #003865; padding-top:12px; }
     .docs-title { font-size:11px; font-weight:bold; color:#003865; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:10px; }
     .docs-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; }
@@ -135,27 +147,26 @@ async function printInvoice(inv, loadDocs=[], invoiceDocs=[]) {
     .doc-meta { font-size:9px; color:#888; padding:2px 6px 6px; }
     @media print { body { padding:0; } }
   </style></head><body>
+
   <div class="header">
     <div>
       <div class="company-name">Signal Transportation Ltd</div>
-      <div style="font-size:10px;color:#555;margin-top:4px;line-height:1.7">
-        3170 194th St Unit 102, Surrey, BC V3Z 0N4<br/>604-867-5543
-      </div>
+      <div style="font-size:10px;color:#555;margin-top:4px;line-height:1.7">3170 194th St Unit 102, Surrey, BC V3Z 0N4<br/>604-867-5543</div>
     </div>
     <div>
       <div class="inv-title">INVOICE</div>
       <div class="inv-meta">
         <div><b>Invoice #:</b> ${inv.invoice_number}</div>
-        <div><b>Load #:</b> ${inv.load_number||'—'}</div>
+        ${inv.ref_number?`<div><b>Customer Ref:</b> ${inv.ref_number}</div>`:''}
         <div><b>Date:</b> ${inv.created_at?new Date(inv.created_at).toLocaleDateString():''}</div>
-        <div><b>Due Date:</b> ${inv.due_date?new Date(inv.due_date).toLocaleDateString():''}</div>
+        <div><b>Due Date:</b> ${inv.due_date?new Date(inv.due_date).toLocaleDateString():'—'}</div>
         <div><b>Terms:</b> ${inv.payment_terms||'Net 30'}</div>
       </div>
     </div>
   </div>
 
-  <div class="grid2">
-    <div class="bill-to">
+  <div class="top-grid">
+    <div class="bill-box">
       <span class="bill-label">Bill To</span>
       <div style="font-weight:bold;font-size:13px">${inv.customer_name||''}</div>
       ${inv.address_line1?`<div style="margin-top:2px">${inv.address_line1}</div>`:''}
@@ -163,47 +174,78 @@ async function printInvoice(inv, loadDocs=[], invoiceDocs=[]) {
       ${inv.cust_phone?`<div style="margin-top:2px">${inv.cust_phone}</div>`:''}
       ${inv.customer_email?`<div style="color:#0063A3">${inv.customer_email}</div>`:''}
     </div>
-    ${inv.origin_city||inv.dest_city?`<div class="shipment">
-      <div class="ship-title">Shipment Details</div>
-      <div><b>From:</b> ${[inv.origin_name,inv.origin_city,inv.origin_state].filter(Boolean).join(' — ')}</div>
-      <div><b>To:</b> ${[inv.dest_name,inv.dest_city,inv.dest_state].filter(Boolean).join(' — ')}</div>
-      <div style="margin-top:3px">
-        <b>Pickup:</b> ${inv.pickup_date?new Date(inv.pickup_date).toLocaleDateString():'—'}
-        &nbsp; <b>Delivery:</b> ${inv.delivery_date?new Date(inv.delivery_date).toLocaleDateString():'—'}
-      </div>
-      ${inv.miles?`<div><b>Miles:</b> ${inv.miles}</div>`:''}
-      ${inv.driver_name?`<div><b>Driver:</b> ${inv.driver_name}</div>`:''}
-    </div>`:'<div></div>'}
+    ${inv.miles?`<div style="font-size:11px;line-height:2;padding:8px 0"><div><b>Miles:</b> ${inv.miles}</div></div>`:''}
   </div>
 
+  <div class="section-title">Shipment Stops</div>
   <table>
     <thead><tr>
-      <th>Description</th>
-      <th style="width:65px" class="r">Qty</th>
-      <th style="width:55px">Unit</th>
-      <th style="width:85px" class="r">Rate</th>
-      <th style="width:95px" class="r">Amount</th>
+      <th style="width:40px"></th><th>Company</th><th>Address</th><th>City / State</th>
     </tr></thead>
     <tbody>
-      ${lines.length>0 ? lines.map(l=>`<tr>
-        <td>${l.description}</td>
-        <td class="r">${l.quantity||''}</td>
-        <td>${l.unit||''}</td>
-        <td class="r">${l.rate?'$'+parseFloat(l.rate).toFixed(2):''}</td>
-        <td class="r" style="font-weight:600">$${parseFloat(l.amount).toFixed(2)}</td>
-      </tr>`).join('') : '<tr><td colspan="5" style="text-align:center;color:#aaa;padding:16px">No line items</td></tr>'}
+      <tr>
+        <td><span class="stop-type" style="color:#003865">PU</span></td>
+        <td>${inv.origin_name||'—'}</td>
+        <td>${inv.origin_address||''}</td>
+        <td>${[inv.origin_city,inv.origin_state,inv.origin_zip].filter(Boolean).join(', ')||'—'}</td>
+      </tr>
+      <tr>
+        <td><span class="stop-type" style="color:#059669">DEL</span></td>
+        <td>${inv.dest_name||'—'}</td>
+        <td>${inv.dest_address||''}</td>
+        <td>${[inv.dest_city,inv.dest_state,inv.dest_zip].filter(Boolean).join(', ')||'—'}</td>
+      </tr>
     </tbody>
   </table>
 
-  <div class="totals">
-    <div class="tot-row"><span class="tot-lbl">Subtotal:</span><span>$${sub.toFixed(2)}</span></div>
-    ${tax>0?`<div class="tot-row"><span class="tot-lbl">GST (${inv.gst_rate||5}%):</span><span>$${tax.toFixed(2)}</span></div>`:''}
-    <div class="tot-row grand"><span class="tot-lbl">TOTAL:</span><span>$${total.toFixed(2)}</span></div>
-    ${paid>0?`<div class="tot-row"><span class="tot-lbl">Amount Paid:</span><span style="color:#2e7d32">($${paid.toFixed(2)})</span></div>`:''}
-    <div class="tot-row balance"><span class="tot-lbl">BALANCE DUE:</span><span>$${bal.toFixed(2)}</span></div>
-  </div>
+  <div class="section-title">Commodity</div>
+  <table>
+    <thead><tr>
+      <th>Commodity</th><th class="r">Pcs</th><th class="r">Bill Wgt</th>
+    </tr></thead>
+    <tbody>
+      ${commLines.length>0 ? commLines.map(l=>{
+        const parts = l.description.split(' — ').map(s=>s.trim());
+        const commodity = parts[0]||'—';
+        const pcs = (parts.find(p=>p.includes('pcs'))||'').replace(' pcs','');
+        const wgt = (parts.find(p=>p.includes('lb'))||'').replace(' lb','');
+        return `<tr><td>${commodity}</td><td class="r">${pcs||'—'}</td><td class="r">${wgt||'—'}</td></tr>`;
+      }).join('') : '<tr><td colspan="3" style="color:#aaa;text-align:center;padding:8px">No commodity info</td></tr>'}
+    </tbody>
+  </table>
 
-  ${inv.notes?`<div style="border:1px solid #eee;padding:8px 10px;margin-bottom:14px;font-size:10px"><b>Notes:</b> ${inv.notes}</div>`:''}
+  ${accLines.length>0?`
+  <div class="section-title">Accessorial Charges</div>
+  <table>
+    <thead><tr>
+      <th>Accessorial</th><th class="r">Rate Ea</th><th class="r">Units</th><th class="r">Amount</th>
+    </tr></thead>
+    <tbody>
+      ${accLines.map(l=>`<tr>
+        <td>${l.description}</td>
+        <td class="r">$${parseFloat(l.unit_price||l.total_price||0).toFixed(2)}</td>
+        <td class="r">${l.quantity||1}</td>
+        <td class="r">$${parseFloat(l.total_price||l.amount||0).toFixed(2)}</td>
+      </tr>`).join('')}
+    </tbody>
+  </table>`:''}
+
+  <div class="summary-grid">
+    <div style="font-size:11px;line-height:2">
+      <div><b>Pickup Date:</b> ${inv.pickup_date?new Date(inv.pickup_date).toLocaleDateString():'—'} &nbsp;&nbsp; <b>Delivery Date:</b> ${inv.delivery_date?new Date(inv.delivery_date).toLocaleDateString():'—'}</div>
+      <div><b>Total Pieces:</b> ${commLines.map(l=>l.description).join(' ').match(/\d+(?= pcs)/)?.[0]||'—'} &nbsp;&nbsp; <b>Miles:</b> ${inv.miles||0}</div>
+      ${inv.notes?`<div style="margin-top:4px;color:#555"><b>Notes:</b> ${inv.notes}</div>`:''}
+    </div>
+    <div>
+      <div class="sum-row"><span>Freight:</span><span>$${freight.toFixed(2)}</span></div>
+      ${fuelTotal>0?`<div class="sum-row"><span>+ Fuel Surcharge:</span><span>$${fuelTotal.toFixed(2)}</span></div>`:''}
+      ${accTotal>0?`<div class="sum-row"><span>+ Accessorials:</span><span>$${accTotal.toFixed(2)}</span></div>`:''}
+      ${tax>0?`<div class="sum-row"><span>+ GST:</span><span>$${tax.toFixed(2)}</span></div>`:''}
+      <div class="sum-row total"><span>Invoice Total:</span><span>$${total.toFixed(2)}</span></div>
+      ${paid>0?`<div class="sum-row"><span>Amount Paid:</span><span style="color:#2e7d32">($${paid.toFixed(2)})</span></div>`:''}
+      <div class="sum-row balance"><span>Balance Due:</span><span>$${bal.toFixed(2)}</span></div>
+    </div>
+  </div>
 
   <div class="remit">
     <b>REMIT PAYMENT TO:</b><br/>
@@ -543,7 +585,7 @@ function InvoiceDetail({ invoiceId, onClose, onRefresh }) {
   const total  = parseFloat(inv.total_amount)||0;
   const paid   = parseFloat(inv.amount_paid)||0;
   const bal    = total - paid;
-  const allLoadDocs    = loadDocs || [];
+  const allLoadDocs    = (loadDocs || []).filter(d => d.doc_type === 'pod');
   const allInvoiceDocs = invoiceDocs || [];
   const totalDocCount  = allLoadDocs.length + allInvoiceDocs.length;
 
@@ -659,8 +701,8 @@ function InvoiceDetail({ invoiceId, onClose, onRefresh }) {
                 <td style={TD}>{l.description}</td>
                 <td style={{...TD,textAlign:'right'}}>{l.quantity||''}</td>
                 <td style={TD}>{l.unit||''}</td>
-                <td style={{...TD,textAlign:'right'}}>{l.rate?'$'+parseFloat(l.rate).toFixed(2):''}</td>
-                <td style={{...TD,textAlign:'right',fontWeight:600}}>${parseFloat(l.amount).toFixed(2)}</td>
+                <td style={{...TD,textAlign:'right',color:'#9CA3AF'}}>{l.line_type==='commodity'?'':((l.unit_price||l.rate)?'$'+parseFloat(l.unit_price||l.rate||0).toFixed(2):'')}</td>
+                <td style={{...TD,textAlign:'right',fontWeight:600,color:l.line_type==='commodity'?'#9CA3AF':'inherit'}}>{l.line_type==='commodity'?'—':'$'+parseFloat(l.total_price||l.amount||0).toFixed(2)}</td>
               </tr>
             ))}
             {lines.length===0&&(
@@ -770,7 +812,7 @@ function InvoiceDetail({ invoiceId, onClose, onRefresh }) {
             <div style={{textAlign:'center',padding:'20px',color:'#aaa',border:'1px dashed #ddd',borderRadius:4,fontSize:12}}>
               <Upload size={20} style={{marginBottom:6,opacity:0.4,display:'block',margin:'0 auto 6px'}}/> 
               No documents yet.<br/>
-              <span style={{fontSize:11}}>POD, BOL and Rate Confirmation from the load will appear here automatically.</span>
+              <span style={{fontSize:11}}>POD from the load will appear here automatically. Use "Attach" to upload additional POD documents.</span>
             </div>
           )}
         </div>
@@ -818,7 +860,8 @@ function InvoiceDetail({ invoiceId, onClose, onRefresh }) {
       </Modal>
 
       <DocUploadModal open={docUpload} onClose={()=>{setDocUpload(false);refetchDocs();}}
-        entityType="invoice" entityId={invoiceId} entityLabel={inv.invoice_number}/>
+        entityType="invoice" entityId={invoiceId} entityLabel={inv.invoice_number}
+        defaultDocType="pod"/>
 
       <Confirm open={confirmVoid} onClose={()=>setConfirmVoid(false)} onConfirm={()=>voidMut.mutate()} danger
         title="Void Invoice" message={`Void invoice ${inv.invoice_number}? This cannot be undone.`}/>
@@ -1069,146 +1112,6 @@ function ReadyToBillTab({ customers }) {
   );
 }
 
-
-// ─── QuickBooks Export Modal ──────────────────────────────────────────────────
-function generateIIF(invoices, type) {
-  const lines = [];
-  const today = new Date().toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'numeric'});
-  lines.push('!TRNS	TRNSTYPE	DATE	ACCNT	NAME	AMOUNT	DOCNUM	MEMO');
-  lines.push('!SPL	TRNSTYPE	DATE	ACCNT	NAME	AMOUNT	DOCNUM	MEMO');
-  lines.push('!ENDTRNS');
-  if (type === 'invoices') {
-    invoices.forEach(inv => {
-      const date = inv.created_at ? new Date(inv.created_at).toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'numeric'}) : today;
-      const amount = parseFloat(inv.total_amount)||0;
-      const memo = `Load: ${inv.load_number||'—'}`;
-      lines.push(`TRNS	INVOICE	${date}	Accounts Receivable	${inv.customer_name}	${amount.toFixed(2)}	${inv.invoice_number}	${memo}`);
-      lines.push(`SPL	INVOICE	${date}	Freight Income	${inv.customer_name}	-${amount.toFixed(2)}	${inv.invoice_number}	${memo}`);
-      lines.push('ENDTRNS');
-    });
-  } else {
-    invoices.filter(i=>parseFloat(i.amount_paid)>0).forEach(inv => {
-      const date = inv.paid_date ? new Date(inv.paid_date).toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'numeric'}) : today;
-      const paid = parseFloat(inv.amount_paid)||0;
-      lines.push(`TRNS	PAYMENT	${date}	Checking	${inv.customer_name}	${paid.toFixed(2)}	${inv.invoice_number}	Payment for ${inv.invoice_number}`);
-      lines.push(`SPL	PAYMENT	${date}	Accounts Receivable	${inv.customer_name}	-${paid.toFixed(2)}	${inv.invoice_number}	Payment for ${inv.invoice_number}`);
-      lines.push('ENDTRNS');
-    });
-  }
-  return lines.join('\n');
-}
-
-function dlFile(content, filename, mime='text/plain') {
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(new Blob([content],{type:mime}));
-  a.download = filename; a.click();
-}
-
-function ExportModal({ open, onClose, rows }) {
-  const qc = useQueryClient();
-  const [dateFrom, setDateFrom] = useState('');
-  const [dateTo,   setDateTo]   = useState('');
-  const [showAll,  setShowAll]  = useState(false);
-  const dateStr = new Date().toISOString().slice(0,10);
-
-  // Only show invoices NOT yet exported to QB (unless showAll checked)
-  const filtered = (rows||[]).filter(inv => {
-    if (inv.status==='void') return false;
-    if (!showAll && inv.qb_exported_at) return false;
-    if (dateFrom && new Date(inv.created_at) < new Date(dateFrom)) return false;
-    if (dateTo   && new Date(inv.created_at) > new Date(dateTo+'T23:59:59')) return false;
-    return true;
-  });
-  const alreadyExported = (rows||[]).filter(i=>i.qb_exported_at&&i.status!=='void').length;
-
-  const markExported = async (ids) => {
-    try {
-      await api.post('/invoices/mark-exported', { invoice_ids: ids });
-      qc.invalidateQueries(['invoices']);
-    } catch(e) { /* non-critical */ }
-  };
-
-  const exportIIF = async (type) => {
-    const data = type==='payments' ? filtered.filter(i=>parseFloat(i.amount_paid)>0) : filtered;
-    if (!data.length) { alert('No new invoices to export.\nCheck "Include already exported" to re-export.'); return; }
-    dlFile(generateIIF(filtered, type), `Signal_TMS_${type}_${dateStr}.iif`);
-    await markExported(data.map(i=>i.id));
-    toast.success(`Exported ${data.length} ${type} to QB ✅`);
-  };
-
-  const exportCSV = async () => {
-    if (!filtered.length) { alert('No new invoices to export.\nCheck "Include already exported" to re-export.'); return; }
-    const hdr = ['Invoice #','Load #','Customer','Date','Due Date','Total','Paid','Balance','Status'];
-    const rows2 = filtered.map(inv => [
-      inv.invoice_number, inv.load_number||'', inv.customer_name,
-      inv.created_at?new Date(inv.created_at).toLocaleDateString():'',
-      inv.due_date?new Date(inv.due_date).toLocaleDateString():'',
-      parseFloat(inv.total_amount||0).toFixed(2),
-      parseFloat(inv.amount_paid||0).toFixed(2),
-      (parseFloat(inv.total_amount||0)-parseFloat(inv.amount_paid||0)).toFixed(2),
-      inv.status,
-    ].map(v=>`"${v}"`).join(','));
-    dlFile([hdr.join(','),...rows2].join('\n'), `Signal_TMS_Invoices_${dateStr}.csv`, 'text/csv');
-    await markExported(filtered.map(i=>i.id));
-    toast.success(`Exported ${filtered.length} invoices to CSV ✅`);
-  };
-
-  if (!open) return null;
-  return (
-    <div style={{position:'fixed',inset:0,zIndex:3000,display:'flex',alignItems:'center',justifyContent:'center',background:'rgba(0,0,0,0.55)'}}>
-      <div style={{background:'#fff',borderRadius:8,boxShadow:'0 16px 60px rgba(0,0,0,0.25)',width:480,overflow:'hidden'}}>
-        <div style={{background:'#003865',color:'#fff',padding:'14px 20px',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-          <div>
-            <div style={{fontWeight:700,fontSize:15}}>📊 Export to QuickBooks Desktop</div>
-            <div style={{fontSize:11,opacity:0.75,marginTop:2}}>Generate IIF or CSV files for import</div>
-          </div>
-          <button onClick={onClose} style={{background:'none',border:'none',color:'#fff',cursor:'pointer',fontSize:22,lineHeight:1}}>×</button>
-        </div>
-        <div style={{padding:'20px'}}>
-          <div style={{marginBottom:16}}>
-            <div style={{fontSize:11,fontWeight:700,color:'#374151',marginBottom:8,textTransform:'uppercase',letterSpacing:'0.05em'}}>Date Range (optional)</div>
-            <div style={{display:'flex',gap:10,alignItems:'center'}}>
-              <div style={{flex:1}}><label style={{fontSize:11,color:'#6B7280',display:'block',marginBottom:3}}>From</label>
-                <input type="date" value={dateFrom} onChange={e=>setDateFrom(e.target.value)} style={{width:'100%',padding:'7px 10px',border:'1px solid #D1D5DB',borderRadius:5,fontSize:12}}/></div>
-              <div style={{flex:1}}><label style={{fontSize:11,color:'#6B7280',display:'block',marginBottom:3}}>To</label>
-                <input type="date" value={dateTo} onChange={e=>setDateTo(e.target.value)} style={{width:'100%',padding:'7px 10px',border:'1px solid #D1D5DB',borderRadius:5,fontSize:12}}/></div>
-            </div>
-            <div style={{marginTop:6,fontSize:11,display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
-              <span style={{color:filtered.length>0?'#374151':'#DC2626',fontWeight:600}}>{filtered.length} invoice{filtered.length!==1?'s':''} ready to export</span>
-              {alreadyExported>0&&<span style={{color:'#059669'}}>✅ {alreadyExported} already exported to QB</span>}
-              <label style={{display:'flex',alignItems:'center',gap:5,cursor:'pointer',marginLeft:'auto',userSelect:'none',color:'#6B7280'}}>
-                <input type="checkbox" checked={showAll} onChange={e=>setShowAll(e.target.checked)}/>
-                Include already exported
-              </label>
-            </div>
-          </div>
-          <div style={{display:'flex',flexDirection:'column',gap:10}}>
-            <div style={{border:'1px solid #BFDBFE',borderRadius:8,padding:'12px 16px',background:'#EFF6FF',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-              <div><div style={{fontWeight:700,fontSize:13,color:'#1E40AF'}}>📄 Invoices (.iif)</div><div style={{fontSize:11,color:'#6B7280',marginTop:2}}>QuickBooks Desktop Sales Invoices</div></div>
-              <button onClick={()=>exportIIF('invoices')} style={{padding:'6px 14px',background:'#003865',color:'#fff',border:'none',borderRadius:5,fontSize:12,fontWeight:700,cursor:'pointer',display:'flex',alignItems:'center',gap:4}}><Download size={12}/> Export</button>
-            </div>
-            <div style={{border:'1px solid #A7F3D0',borderRadius:8,padding:'12px 16px',background:'#ECFDF5',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-              <div><div style={{fontWeight:700,fontSize:13,color:'#065F46'}}>💰 Payments Received (.iif)</div><div style={{fontSize:11,color:'#6B7280',marginTop:2}}>QuickBooks Desktop Payment entries</div></div>
-              <button onClick={()=>exportIIF('payments')} style={{padding:'6px 14px',background:'#059669',color:'#fff',border:'none',borderRadius:5,fontSize:12,fontWeight:700,cursor:'pointer',display:'flex',alignItems:'center',gap:4}}><Download size={12}/> Export</button>
-            </div>
-            <div style={{border:'1px solid #E5E7EB',borderRadius:8,padding:'12px 16px',background:'#F9FAFB',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-              <div><div style={{fontWeight:700,fontSize:13,color:'#374151'}}>📊 Spreadsheet (.csv)</div><div style={{fontSize:11,color:'#6B7280',marginTop:2}}>Open in Excel or import manually</div></div>
-              <button onClick={exportCSV} style={{padding:'6px 14px',background:'#374151',color:'#fff',border:'none',borderRadius:5,fontSize:12,fontWeight:700,cursor:'pointer',display:'flex',alignItems:'center',gap:4}}><Download size={12}/> Export</button>
-            </div>
-          </div>
-          <div style={{marginTop:14,padding:'10px 14px',background:'#FFFBEB',border:'1px solid #FDE68A',borderRadius:6,fontSize:11,color:'#92400E'}}>
-            <b>How to import IIF into QuickBooks Desktop:</b><br/>
-            File → Utilities → Import → IIF Files → select the downloaded file → OK
-          </div>
-        </div>
-        <div style={{padding:'10px 20px',borderTop:'1px solid #E5E7EB',background:'#F9FAFB',textAlign:'right'}}>
-          <button onClick={onClose} style={{padding:'6px 18px',border:'1px solid #D1D5DB',borderRadius:5,background:'#fff',fontSize:12,fontWeight:600,cursor:'pointer'}}>Close</button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 export default function Invoicing() {
   const qc = useQueryClient();
   const navigate = useNavigate();
@@ -1220,7 +1123,6 @@ export default function Invoicing() {
   const [selected,setSelected] = useState(null);
   const [createModal,setCreateModal] = useState(false);
   const [tab, setTab] = useState('invoices');
-  const [exportModal, setExportModal] = useState(false);
   const { menu,openMenu,closeMenu } = useContextMenu();
 
   const { data, isLoading } = useQuery({
@@ -1297,10 +1199,6 @@ export default function Invoicing() {
           <button className="btn btn-secondary btn-sm" onClick={syncDelivered}
             style={{display:'flex',alignItems:'center',gap:4,fontSize:12}} title="Create invoices for delivered loads missing one">
             <RefreshCw size={12}/> Sync Delivered
-          </button>
-          <button onClick={()=>setExportModal(true)}
-            style={{display:'flex',alignItems:'center',gap:5,padding:'7px 14px',background:'#fff',border:'1px solid #D1D5DB',borderRadius:5,fontSize:12,fontWeight:600,cursor:'pointer',color:'#374151'}}>
-            <Download size={13}/> Export to QB
           </button>
           <button className="btn btn-primary" onClick={()=>setCreateModal(true)}><Plus size={14}/> New Invoice</button>
         </div>
@@ -1425,7 +1323,6 @@ export default function Invoicing() {
       {/* Create Invoice Modal */}
       <CreateInvoiceModal open={createModal} onClose={()=>setCreateModal(false)} customers={customers}/>
 
-      {exportModal&&<ExportModal open={exportModal} onClose={()=>setExportModal(false)} rows={rows}/> }
       <ContextMenu {...menu} onClose={closeMenu}/>
       </>)}
     </div>

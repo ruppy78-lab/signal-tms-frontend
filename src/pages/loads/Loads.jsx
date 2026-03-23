@@ -39,7 +39,7 @@ const CI = { width:'100%', padding:'3px 5px', border:'none', fontSize:12, backgr
 const sumAcc = (accessorials) => {
   if (!accessorials) return 0;
   if (typeof accessorials === 'number') return accessorials;
-  if (Array.isArray(accessorials)) return accessorials.reduce((s,a)=>s+(parseFloat(a.amount)||0),0);
+  if (Array.isArray(accessorials)) return accessorials.reduce((s,a)=>s+(parseFloat(a.amt||a.amount||0)),0);
   return parseFloat(accessorials)||0;
 };
 
@@ -178,7 +178,7 @@ function BOLPreview({ load, shipper, consignee, commodities, showFreight, showBi
 
       {/* Header row */}
       <div style={{ display:'grid',gridTemplateColumns:'2fr 1fr 1fr 1fr',border:'1px solid #000',marginBottom:-1 }}>
-        {[['NAME OF CARRIER',CARRIER_NAME],['CARRIER\'S NO.',load.load_number||'NEW'],['DATE',today],['SHIPPER\'S NO.',load.ref_number||'']].map(([l,v])=>(
+        {[['NAME OF CARRIER',CARRIER_NAME],['CARRIER\'S NO.',load.load_number||'NEW'],['DATE',today],['SHIPPER\'S NO.',shipper.reference||'']].map(([l,v])=>(
           <div key={l} style={{ padding:'3px 7px',borderRight:'1px solid #999' }}>
             <span style={{ fontSize:9,color:'#555',display:'block' }}>{l}</span>
             <span style={{ fontWeight:'bold',fontSize:11 }}>{v}</span>
@@ -195,19 +195,21 @@ function BOLPreview({ load, shipper, consignee, commodities, showFreight, showBi
       {/* From / To */}
       <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',border:'1px solid #000',marginBottom:-1 }}>
         <div style={{ padding:'7px 10px',borderRight:'1px solid #000' }}>
-          <div style={{ fontSize:9,fontWeight:'bold',color:'#cc0000',marginBottom:2 }}>FROM:</div>
-          <div><b style={{ fontSize:9 }}>SHIPPER </b>{shipper.company_name}</div>
-          <div><b style={{ fontSize:9 }}>(ORIGIN) </b>{shipper.address}</div>
-          <div style={{ paddingLeft:52 }}>{[shipper.city,shipper.state,shipper.zip].filter(Boolean).join(', ')}</div>
-          {!hidePhones && shipper.phone && <div style={{ paddingLeft:52 }}>{shipper.phone}</div>}
-          {!hidePhones && shipper.contact && <div style={{ paddingLeft:52 }}>{shipper.contact}</div>}
+          <div style={{ fontSize:9,fontWeight:'bold',color:'#cc0000',marginBottom:3 }}>FROM:</div>
+          <div style={{ fontSize:9,fontWeight:'bold',color:'#555',marginBottom:2 }}>SHIPPER</div>
+          <div style={{ fontWeight:'bold',fontSize:11,marginBottom:2 }}>{shipper.company_name}</div>
+          <div>{shipper.address}</div>
+          <div>{[shipper.city,shipper.state,shipper.zip].filter(Boolean).join(', ')}</div>
+          {!hidePhones && shipper.phone && <div style={{ marginTop:2 }}>{shipper.phone}</div>}
+          {!hidePhones && shipper.contact && <div>{shipper.contact}</div>}
         </div>
         <div style={{ padding:'7px 10px' }}>
-          <div style={{ fontSize:9,fontWeight:'bold',color:'#cc0000',marginBottom:2 }}>TO:</div>
-          <div><b style={{ fontSize:9 }}>CONSIGNEE </b>{consignee.company_name}</div>
-          <div><b style={{ fontSize:9 }}>STREET </b>{consignee.address}</div>
-          <div><b style={{ fontSize:9 }}>DESTINATION </b>{[consignee.city,consignee.state,consignee.zip].filter(Boolean).join(', ')}</div>
-          {!hidePhones && consignee.phone && <div><b style={{ fontSize:9 }}>PHONE </b>{consignee.phone}</div>}
+          <div style={{ fontSize:9,fontWeight:'bold',color:'#cc0000',marginBottom:3 }}>TO:</div>
+          <div style={{ fontSize:9,fontWeight:'bold',color:'#555',marginBottom:2 }}>CONSIGNEE</div>
+          <div style={{ fontWeight:'bold',fontSize:11,marginBottom:2 }}>{consignee.company_name}</div>
+          <div>{consignee.address}</div>
+          <div>{[consignee.city,consignee.state,consignee.zip].filter(Boolean).join(', ')}</div>
+          {!hidePhones && consignee.phone && <div style={{ marginTop:2 }}>{consignee.phone}</div>}
         </div>
       </div>
 
@@ -433,7 +435,7 @@ function buildBOLHTML({ load, stops, commodities, showFreight, showBilling, show
         <div class="hdr-cell"><span class="lbl">Name of Carrier</span><span class="val">${CARRIER_NAME}</span></div>
         <div class="hdr-cell"><span class="lbl">Carrier's No.</span><span class="val">${load.load_number||'NEW'}</span></div>
         <div class="hdr-cell"><span class="lbl">Date</span><span class="val">${today}</span></div>
-        <div class="hdr-cell"><span class="lbl">Shipper's No.</span><span class="val">${load.ref_number||''}</span></div>
+        <div class="hdr-cell"><span class="lbl">Shipper's No.</span><span class="val">${shipper.reference||''}</span></div>
       </div>
 
       <div class="legal">
@@ -444,18 +446,20 @@ function buildBOLHTML({ load, stops, commodities, showFreight, showBilling, show
       <div class="from-to">
         <div class="from-cell">
           <span class="section-lbl">FROM:</span>
-          <div><span class="field-lbl">SHIPPER </span>${shipper.company_name||''}</div>
-          <div><span class="field-lbl">(ORIGIN) </span>${shipper.address||''}</div>
-          <div style="padding-left:52px">${[shipper.city,shipper.state,shipper.zip].filter(Boolean).join(', ')}</div>
-          ${!hidePhones&&shipper.phone?`<div style="padding-left:52px">${shipper.phone}</div>`:''}
-          ${!hidePhones&&shipper.contact?`<div style="padding-left:52px">${shipper.contact}</div>`:''}
+          <div style="font-size:8px;font-weight:bold;color:#555;margin-bottom:2px">SHIPPER</div>
+          <div style="font-weight:bold;font-size:11px;margin-bottom:2px">${shipper.company_name||''}</div>
+          <div>${shipper.address||''}</div>
+          <div>${[shipper.city,shipper.state,shipper.zip].filter(Boolean).join(', ')}</div>
+          ${!hidePhones&&shipper.phone?`<div style="margin-top:2px">${shipper.phone}</div>`:''}
+          ${!hidePhones&&shipper.contact?`<div>${shipper.contact}</div>`:''}
         </div>
         <div class="to-cell">
           <span class="section-lbl">TO:</span>
-          <div><span class="field-lbl">CONSIGNEE </span>${consignee.company_name||''}</div>
-          <div><span class="field-lbl">STREET </span>${consignee.address||''}</div>
-          <div><span class="field-lbl">DESTINATION </span>${[consignee.city,consignee.state,consignee.zip].filter(Boolean).join(', ')}</div>
-          ${!hidePhones&&consignee.phone?`<div><span class="field-lbl">PHONE </span>${consignee.phone}</div>`:''}
+          <div style="font-size:8px;font-weight:bold;color:#555;margin-bottom:2px">CONSIGNEE</div>
+          <div style="font-weight:bold;font-size:11px;margin-bottom:2px">${consignee.company_name||''}</div>
+          <div>${consignee.address||''}</div>
+          <div>${[consignee.city,consignee.state,consignee.zip].filter(Boolean).join(', ')}</div>
+          ${!hidePhones&&consignee.phone?`<div style="margin-top:2px">${consignee.phone}</div>`:''}
         </div>
       </div>
 
@@ -1200,7 +1204,7 @@ function StopInfoPopup({ stop, onSave, onDelete, onClose, locations }) {
               Appointment Required
             </label>
             <div><label style={lbl}>Appt Reference</label><input style={inp} value={form.appt_ref||''} onChange={e=>h('appt_ref',e.target.value)}/></div>
-            <div><label style={lbl}>Stop Reference</label><input style={inp} value={form.reference||''} onChange={e=>h('reference',e.target.value)}/></div>
+            <div><label style={lbl}>PO No</label><input style={inp} value={form.reference||''} onChange={e=>h('reference',e.target.value)}/></div>
           </div>
 
           {/* Stop Services */}

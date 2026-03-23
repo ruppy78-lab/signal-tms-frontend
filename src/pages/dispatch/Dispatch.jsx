@@ -611,9 +611,9 @@ function TripCard({ trip, onEdit, onAddLoad, onReorder, onNotify, onComplete, on
   const totalRev = legs.reduce((s,l)=>s+(parseFloat(l.total_revenue)||0),0);
   const totalPcs = legs.reduce((s,l)=>s+(parseInt(l.pieces)||0),0);
   const totalWgt = legs.reduce((s,l)=>s+(parseFloat(l.weight)||0),0);
-  const progress = visibleLegs.length>0 ? (done/visibleLegs.length)*100 : 0;
+  const progress = legs.length>0 ? (done/legs.length)*100 : 0;
   const firstCity = legs[0]?.stop_type==='pickup' ? legs[0]?.origin_city : legs[0]?.dest_city;
-  const lastLeg   = visibleLegs[visibleLegs.length-1]||legs[legs.length-1];
+  const lastLeg   = legs[legs.length-1];
   const lastCity  = lastLeg?.stop_type==='delivery' ? lastLeg?.dest_city : lastLeg?.origin_city;
 
   const statusColor = TS[trip.status]||'#6B7280';
@@ -685,7 +685,7 @@ function TripCard({ trip, onEdit, onAddLoad, onReorder, onNotify, onComplete, on
           </div>
 
           {/* Route */}
-          {visibleLegs.length>0&&(
+          {legs.length>0&&(
             <div style={{display:'flex',alignItems:'center',gap:4,fontSize:11,color:'#6B7280',whiteSpace:'nowrap',flexShrink:0}}>
               <MapPin size={10} style={{color:'#9CA3AF'}}/>
               {firstCity||'—'}
@@ -706,9 +706,9 @@ function TripCard({ trip, onEdit, onAddLoad, onReorder, onNotify, onComplete, on
           {/* Stops progress */}
           <div style={{padding:'9px 12px',borderRight:`1px solid ${statusBorder}`,display:'flex',flexDirection:'column',justifyContent:'center',minWidth:80,alignItems:'center'}}>
             <div style={{fontSize:9,fontWeight:700,textTransform:'uppercase',color:'#9CA3AF',letterSpacing:'0.05em',marginBottom:3}}>Stops</div>
-            <div style={{fontSize:13,fontWeight:700,color:done===visibleLegs.length&&visibleLegs.length>0?'#059669':'#374151'}}>{done}/{visibleLegs.length}</div>
+            <div style={{fontSize:13,fontWeight:700,color:done===legs.length&&legs.length>0?'#059669':'#374151'}}>{done}/{legs.length}</div>
             <div style={{width:56,height:3,background:'#E5E7EB',borderRadius:2,marginTop:3}}>
-              <div style={{width:`${progress}%`,height:'100%',background:done===visibleLegs.length&&visibleLegs.length>0?'#059669':'#0063A3',borderRadius:2,transition:'width 0.3s'}}/>
+              <div style={{width:`${progress}%`,height:'100%',background:done===legs.length&&legs.length>0?'#059669':'#0063A3',borderRadius:2,transition:'width 0.3s'}}/>
             </div>
           </div>
 
@@ -845,7 +845,7 @@ function TripCard({ trip, onEdit, onAddLoad, onReorder, onNotify, onComplete, on
                 })}
               </tbody>
               {/* Totals row */}
-              {visibleLegs.length>1&&(
+              {legs.length>1&&(
                 <tfoot>
                   <tr style={{background:'#F8FAFC',borderTop:'2px solid #E5E7EB'}}>
                     <td colSpan={7} style={{...TD,fontWeight:700,color:'#374151',textAlign:'right',fontSize:10,textTransform:'uppercase',letterSpacing:'0.04em'}}>Totals</td>

@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useCallback, useState } from 'react';
+import ReactDOM from 'react-dom';
 import { X, Inbox, Upload, FileText, Trash2, Download } from 'lucide-react';
 import api from '../../utils/api';
 import toast from 'react-hot-toast';
@@ -153,6 +154,8 @@ export const DocUploadModal = ({ open, onClose, entityType, entityId, entityLabe
       toast.success('Document uploaded');
       qc.invalidateQueries(['docs', entityType, entityId]);
       qc.invalidateQueries(['documents']);
+      // Also invalidate the invoice panel's load-docs query so POD appears automatically
+      if (entityType === 'load') qc.invalidateQueries(['load-docs', entityId]);
       onClose();
     },
     onError: (e) => toast.error(e.response?.data?.message || 'Upload failed'),
@@ -238,8 +241,9 @@ export const DocList = ({ entityType, entityId, entityLabel = '' }) => {
     onError: () => toast.error('Delete failed'),
   });
 
-  const docs = data || [];
-  const API_BASE = (process.env.REACT_APP_API_URL || 'http://localhost:4000/api').replace('/api', '');
+  const docs    = data || [];
+  const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:4000/api';
+  const token   = localStorage.getItem('token');
 
   return (
     <div>
@@ -263,7 +267,7 @@ export const DocList = ({ entityType, entityId, entityLabel = '' }) => {
               <div style={{ flex: 1, minWidth: 0 }}>
                 <p style={{ fontSize: 13, fontWeight: 600, color: 'var(--gray-800)',
                   whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                  {doc.file_name}
+                  {doc.original_name || doc.file_name}
                 </p>
                 <p style={{ fontSize: 11, color: 'var(--gray-500)' }}>
                   <StatusBadge status={doc.doc_type} />
@@ -271,8 +275,22 @@ export const DocList = ({ entityType, entityId, entityLabel = '' }) => {
                   {doc.uploaded_by_name && ` · ${doc.uploaded_by_name}`}
                 </p>
               </div>
-              <a href={`${API_BASE}/${doc.file_path}`} target="_blank" rel="noreferrer"
-                className="btn-icon" title="Download / View"><Download size={14} /></a>
+              <button className="btn-icon" title="Download / View"
+                onClick={async () => {
+                  try {
+                    const res = await fetch(`${API_URL}/documents/${doc.id}/download`, {
+                      headers: { Authorization: `Bearer ${token}` }
+                    });
+                    if (!res.ok) { toast.error('Download failed'); return; }
+                    const blob = await res.blob();
+                    const url  = URL.createObjectURL(blob);
+                    const a    = document.createElement('a');
+                    a.href = url; a.download = doc.original_name || doc.file_name;
+                    a.click(); URL.revokeObjectURL(url);
+                  } catch { toast.error('Download failed'); }
+                }}>
+                <Download size={14} />
+              </button>
               <button className="btn-icon" title="Delete" style={{ color: 'var(--danger)' }}
                 onClick={() => { if (window.confirm('Delete this document?')) deleteMut.mutate(doc.id); }}>
                 <Trash2 size={14} />
@@ -281,8 +299,11 @@ export const DocList = ({ entityType, entityId, entityLabel = '' }) => {
           ))}
         </div>
       )}
-      <DocUploadModal open={uploadOpen} onClose={() => setUploadOpen(false)}
-        entityType={entityType} entityId={entityId} entityLabel={entityLabel} />
+      {uploadOpen && ReactDOM.createPortal(
+        <DocUploadModal open={uploadOpen} onClose={() => setUploadOpen(false)}
+          entityType={entityType} entityId={entityId} entityLabel={entityLabel} />,
+        document.body
+      )}
     </div>
   );
 };
